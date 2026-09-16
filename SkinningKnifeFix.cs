@@ -14,8 +14,9 @@
 // It is a prefab child of the controller, independent of the item in your hand. The animation was
 // authored around a stone blade and nobody wired the held item into it.
 //
-// WHAT THIS DOES. When the controller switches on, it looks at the item in your right hand. If that
-// is a knife or a machete, the stone blade is hidden and a visual copy of your blade is put in the
+// WHAT THIS DOES. When the controller switches on, it looks at the blade you are using - the game has
+// already holstered it into the equipped slot by then, so that slot is asked first, then the hand.
+// If it is a knife or a machete, the stone blade is hidden and a visual copy of your blade is put in the
 // same holder, in the same pose. When the controller switches off, the copy is destroyed and the
 // stone blade is shown again. A copy of the VISUAL only - meshes and materials - never the Item
 // itself: no collider, no trigger, no replication, nothing the game could mistake for a second
@@ -44,7 +45,7 @@ namespace SkinningKnifeFix
     {
         public const string Guid    = "com.mohammadkoush.skinningknifefix";
         public const string Name    = "SkinningKnifeFix";
-        public const string Version = "1.0.0";
+        public const string Version = "1.0.1";
 
         private static SkinningKnifeFixPlugin s_Self;
         private static FieldInfo s_BladeFI, s_HolderFI;
@@ -109,21 +110,58 @@ namespace SkinningKnifeFix
             return false;
         }
 
-        /// <summary>The blade in the right hand, if it is one this mod should show.</summary>
+        /// <summary>
+        /// The blade he is using, if it is one this mod should show.
+        ///
+        /// NOT THE HAND. The first build looked at GetCurrentItem and swapped nothing, silently: by
+        /// the time the skinning controller switches on, the game has already called
+        /// Player.HideWeapon(), which takes the weapon out of the hand and puts it into
+        /// InventoryBackpack.m_EquippedItemSlot. So the hand is empty on purpose, and the knife
+        /// is in the equipped slot. Both are asked, the slot first; and if neither holds a blade
+        /// the log says what they held instead, rather than nothing.
+        /// </summary>
         private static Item HeldBlade()
         {
+            Item slotItem = null, handItem = null;
+            try
+            {
+                InventoryBackpack bp = InventoryBackpack.Get();
+                if (bp != null && bp.m_EquippedItemSlot != null) slotItem = bp.m_EquippedItemSlot.m_Item;
+            }
+            catch (Exception) { }
             try
             {
                 Player p = Player.Get();
-                if (p == null) return null;
-                Item it = p.GetCurrentItem(Enums.Hand.Right);
-                if (it == null || it.m_Info == null) it = p.GetCurrentItem(Enums.Hand.Left);
-                if (it == null || it.m_Info == null) return null;
-                if (it.m_Info.IsKnife()) return it;
-                if (s_Self._machetes.Value && it.m_Info.IsMachete()) return it;
+                if (p != null)
+                {
+                    handItem = p.GetCurrentItem(Enums.Hand.Right);
+                    if (handItem == null) handItem = p.GetCurrentItem(Enums.Hand.Left);
+                }
             }
             catch (Exception) { }
-            return null;
+
+            Item pick = Qualifies(slotItem) ? slotItem : (Qualifies(handItem) ? handItem : null);
+            if (pick == null && s_Self != null && s_Self._logSwaps.Value)
+                s_Self.Logger.LogInfo("no blade to swap - equipped slot: " + Describe(slotItem)
+                                      + ", hand: " + Describe(handItem) + " - stone blade kept");
+            return pick;
+        }
+
+        private static bool Qualifies(Item it)
+        {
+            try
+            {
+                if (it == null || it.m_Info == null) return false;
+                if (it.m_Info.IsKnife()) return true;
+                return s_Self != null && s_Self._machetes.Value && it.m_Info.IsMachete();
+            }
+            catch (Exception) { return false; }
+        }
+
+        private static string Describe(Item it)
+        {
+            try { return (it == null || it.m_Info == null) ? "empty" : it.m_Info.m_ID.ToString(); }
+            catch (Exception) { return "?"; }
         }
 
         // -----------------------------------------------------------------------------------------
@@ -156,11 +194,13 @@ namespace SkinningKnifeFix
             // keeps its shape. No Item, no collider, no trigger comes across.
             int meshes = 0;
             Transform root = blade.transform;
-            Renderer[] rends = blade.GetComponentsInChildren<Renderer>(false);
+            // INCLUDING disabled ones: a holstered knife in the equipped slot has its renderers
+            // switched off, and that is exactly the knife this is copying.
+            Renderer[] rends = blade.GetComponentsInChildren<Renderer>(true);
             for (int i = 0; i < rends.Length; i++)
             {
                 Renderer r = rends[i];
-                if (r == null || !r.enabled) continue;
+                if (r == null) continue;
 
                 Mesh mesh = null;
                 MeshFilter mf = r.GetComponent<MeshFilter>();
