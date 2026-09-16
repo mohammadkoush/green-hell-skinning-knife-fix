@@ -45,7 +45,7 @@ namespace SkinningKnifeFix
     {
         public const string Guid    = "com.mohammadkoush.skinningknifefix";
         public const string Name    = "SkinningKnifeFix";
-        public const string Version = "1.0.2";
+        public const string Version = "1.0.3";
 
         private static SkinningKnifeFixPlugin s_Self;
         private static FieldInfo s_BladeFI, s_HolderFI;
@@ -226,13 +226,18 @@ namespace SkinningKnifeFix
             Transform  holder = s_HolderFI.GetValue(ctl) as Transform;
             if (stone == null || holder == null) return;
 
-            // The copy sits exactly where the stone blade sits, plus his offsets.
+            // THE COPY RIDES ON THE STONE BLADE ITSELF. Read from the controller's own code after
+            // his three reports (stone still showing; knife offset to the right; knife not moving):
+            // OnEnable reparents m_StoneBlade to the RIGHT HAND bone, and ControllerLateUpdate sets
+            // its rotation from the hand every frame. The holder is only where it rests between
+            // harvests. A copy parented to the holder therefore sat still, off to one side, while
+            // the real prop moved with the hand. As a child of the blade with no local offset, the
+            // copy goes wherever the game puts the blade, frame by frame, with nothing to track.
             GameObject copy = new GameObject("SkinningKnifeFix_" + blade.m_Info.m_ID);
-            copy.transform.SetParent(holder, false);
-            copy.transform.localPosition = stone.transform.localPosition + s_Self._posOffset.Value;
-            copy.transform.localRotation = stone.transform.localRotation
-                                           * Quaternion.Euler(s_Self._rotOffset.Value);
-            copy.transform.localScale    = stone.transform.localScale;
+            copy.transform.SetParent(stone.transform, false);
+            copy.transform.localPosition = s_Self._posOffset.Value;
+            copy.transform.localRotation = Quaternion.Euler(s_Self._rotOffset.Value);
+            copy.transform.localScale    = Vector3.one;
 
             // Visual only. Each renderer on the held item becomes a plain mesh child, placed where
             // it sits relative to the item's own root - so a knife made of a blade and a handle
@@ -284,11 +289,41 @@ namespace SkinningKnifeFix
                 return;
             }
 
-            if (!s_Self._keepStone.Value) { stone.SetActive(false); s_HiddenBlade = stone; }
+            // HIDE THE STONE BLADE'S RENDERERS, NOT THE OBJECT. SetActive(false) also switched off
+            // the copy riding on it, and the game switches the object back on itself. Renderers
+            // off leaves the game free to animate an invisible blade with a visible knife on it.
+            // Re-applied every LateUpdate in case the game turns them back on.
+            s_HiddenBlade = stone;
             s_Copy = copy;
+            if (!s_Self._keepStone.Value) HideStoneRenderers(stone, copy);
             if (s_Self._logSwaps.Value)
                 s_Self.Logger.LogInfo("skinning with " + blade.m_Info.m_ID + " - " + meshes
                                       + " mesh(es) in place of the stone blade");
+        }
+
+        private static void HideStoneRenderers(GameObject stone, GameObject copy)
+        {
+            try
+            {
+                Renderer[] rs = stone.GetComponentsInChildren<Renderer>(true);
+                for (int i = 0; i < rs.Length; i++)
+                {
+                    if (rs[i] == null) continue;
+                    if (copy != null && rs[i].transform.IsChildOf(copy.transform)) continue;   // ours
+                    if (rs[i].enabled) rs[i].enabled = false;
+                }
+            }
+            catch (Exception) { }
+        }
+
+        private static void ShowStoneRenderers(GameObject stone)
+        {
+            try
+            {
+                Renderer[] rs = stone.GetComponentsInChildren<Renderer>(true);
+                for (int i = 0; i < rs.Length; i++) if (rs[i] != null) rs[i].enabled = true;
+            }
+            catch (Exception) { }
         }
 
         private static void Undo()
@@ -296,7 +331,7 @@ namespace SkinningKnifeFix
             try
             {
                 if (s_Copy != null) UnityEngine.Object.Destroy(s_Copy);
-                if (s_HiddenBlade != null) s_HiddenBlade.SetActive(true);
+                if (s_HiddenBlade != null) ShowStoneRenderers(s_HiddenBlade);
             }
             catch (Exception) { }
             s_Copy = null;
@@ -319,6 +354,22 @@ namespace SkinningKnifeFix
                     Undo();
                     if (s_Self != null) s_Self.Logger.LogWarning("blade swap failed: " + ex.Message);
                 }
+            }
+        }
+
+        // The game re-touches the blade every LateUpdate; so does this, one line after it.
+        [HarmonyPatch(typeof(HarvestingAnimalController), "ControllerLateUpdate")]
+        private static class Patch_LateUpdate
+        {
+            private static void Postfix()
+            {
+                try
+                {
+                    if (s_HiddenBlade == null || s_Copy == null) return;
+                    if (s_Self == null || s_Self._keepStone.Value) return;
+                    HideStoneRenderers(s_HiddenBlade, s_Copy);
+                }
+                catch (Exception) { }
             }
         }
 
