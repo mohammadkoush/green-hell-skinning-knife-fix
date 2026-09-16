@@ -45,7 +45,7 @@ namespace SkinningKnifeFix
     {
         public const string Guid    = "com.mohammadkoush.skinningknifefix";
         public const string Name    = "SkinningKnifeFix";
-        public const string Version = "1.0.1";
+        public const string Version = "1.0.2";
 
         private static SkinningKnifeFixPlugin s_Self;
         private static FieldInfo s_BladeFI, s_HolderFI;
@@ -56,6 +56,8 @@ namespace SkinningKnifeFix
         private ConfigEntry<Vector3> _posOffset;
         private ConfigEntry<Vector3> _rotOffset;
         private ConfigEntry<bool>  _logSwaps;
+        private ConfigEntry<string> _preference;
+        private ConfigEntry<bool>  _keepStone;
 
         // What is currently standing in for the stone blade, and the blade it replaced.
         private static GameObject s_Copy;
@@ -75,6 +77,15 @@ namespace SkinningKnifeFix
                 "from where the stone blade did. x y z.");
             _rotOffset = Config.Bind("Pose", "RotationOffset", Vector3.zero,
                 "Turn the swapped blade, in degrees, if it points the wrong way. x y z.");
+            _preference = Config.Bind("Knife", "BladePreference",
+                "metal_blade_weapon, metal_blade, Machete, Rusted_Machete, Obsidian_Bone_Blade, " +
+                "Obsidian_Blade, Bone_Knife, Stick_Blade, Stone_Blade",
+                "When the blade is not in your hand - the game harvests with any blade in the " +
+                "backpack - this is the order to look for one. Item ids, first match wins. Anything " +
+                "that IsKnife() or IsMachete() but is not listed comes after the list.");
+            _keepStone = Config.Bind("Knife", "KeepStoneBladeToo", false,
+                "Leave the game's stone blade visible alongside the swapped knife. For seeing how " +
+                "the two line up while tuning the pose offsets.");
             _logSwaps = Config.Bind("Diagnostics", "LogSwaps", true,
                 "Write a line to the log each time a blade is swapped, naming the item and how " +
                 "many meshes were copied.");
@@ -141,10 +152,44 @@ namespace SkinningKnifeFix
             catch (Exception) { }
 
             Item pick = Qualifies(slotItem) ? slotItem : (Qualifies(handItem) ? handItem : null);
+
+            // THE BACKPACK. His log: "equipped slot: Tribe_Spear, hand: empty". He skins with a
+            // spear in hand, and the game lets him, because harvesting needs a blade in the
+            // BACKPACK, not in the hand - the game does not care which one. So the blade "he is
+            // using" is whichever the game would reach for, and since the game never says, the
+            // best one he carries stands in, in the order he sets.
+            if (pick == null) pick = BestBladeInBackpack();
+
             if (pick == null && s_Self != null && s_Self._logSwaps.Value)
                 s_Self.Logger.LogInfo("no blade to swap - equipped slot: " + Describe(slotItem)
-                                      + ", hand: " + Describe(handItem) + " - stone blade kept");
+                                      + ", hand: " + Describe(handItem)
+                                      + ", backpack: no knife or machete - stone blade kept");
             return pick;
+        }
+
+        private static Item BestBladeInBackpack()
+        {
+            try
+            {
+                InventoryBackpack bp = InventoryBackpack.Get();
+                if (bp == null || bp.m_Items == null) return null;
+
+                string[] order = (s_Self._preference.Value ?? "").Split(',');
+                Item best = null;
+                int bestRank = int.MaxValue;
+                for (int i = 0; i < bp.m_Items.Count; i++)
+                {
+                    Item it = bp.m_Items[i];
+                    if (!Qualifies(it)) continue;
+                    int rank = order.Length;                         // unlisted: after the list
+                    string id = it.m_Info.m_ID.ToString();
+                    for (int k = 0; k < order.Length; k++)
+                        if (string.Equals(order[k].Trim(), id, StringComparison.OrdinalIgnoreCase)) { rank = k; break; }
+                    if (rank < bestRank) { bestRank = rank; best = it; }
+                }
+                return best;
+            }
+            catch (Exception) { return null; }
         }
 
         private static bool Qualifies(Item it)
@@ -239,9 +284,8 @@ namespace SkinningKnifeFix
                 return;
             }
 
-            stone.SetActive(false);
+            if (!s_Self._keepStone.Value) { stone.SetActive(false); s_HiddenBlade = stone; }
             s_Copy = copy;
-            s_HiddenBlade = stone;
             if (s_Self._logSwaps.Value)
                 s_Self.Logger.LogInfo("skinning with " + blade.m_Info.m_ID + " - " + meshes
                                       + " mesh(es) in place of the stone blade");
